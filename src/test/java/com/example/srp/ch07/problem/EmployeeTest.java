@@ -1,4 +1,6 @@
-package com.example.srp.ch07;
+package com.example.srp.ch07.problem;
+
+import com.example.srp.ch07.TimeCards;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;

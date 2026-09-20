@@ -1,4 +1,7 @@
-package com.example.srp.ch07;
+package com.example.srp.ch07.problem;
+
+import com.example.srp.ch07.TimeCard;
+import com.example.srp.ch07.TimeCards;
 
 import java.util.List;
 
