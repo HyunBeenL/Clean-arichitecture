@@ -464,3 +464,144 @@ DB에 저장된 `"PART_TIME"` 문자열을 정책 객체로 바꾸려면 어딘�
 | [`solution/PayrollCalculatorTest`](src/test/java/com/example/srp/ch08/solution/PayrollCalculatorTest.java) | 세 고용형태 모두 명세대로. **시간제가 675,000원으로 정상** |
 | [`solution/OpenForExtensionTest`](src/test/java/com/example/srp/ch08/solution/OpenForExtensionTest.java) | **★ 분기 0곳 + main 안 고치고 인턴 추가** |
 | [`solution/PayrollPoliciesTest`](src/test/java/com/example/srp/ch08/solution/PayrollPoliciesTest.java) | 조립 지점. 미등록 고용형태는 예외로 즉시 드러난다 |
+
+---
+
+# 9장 LSP — 리스코프 치환 원칙 (`ch09`)
+
+> **S 타입 객체를 T 타입 객체 자리에 넣어도 T를 쓰는 프로그램의 행위가 변하지 않으면, S는 T의 하위 타입이다.**
+
+평이하게 옮기면 — **하위 타입은 상위 타입의 약속(계약)을 지켜야 한다. 사용하는 쪽이 하위 타입을 구분할 필요가 없어야 한다.**
+
+| 디렉터리 | 내용 |
+|---|---|
+| `ch09/problem/shape/` | ⚠️ 정사각형/직사각형 문제 — `Square extends Rectangle` 이 계약을 깨뜨린다 |
+| `ch09/problem/taxi/` | ⚠️ 아키텍처 수준의 위반 — REST 규약을 어긴 회사 때문에 핵심 로직에 `if (acme)` 가 박힌다 |
+| `ch09/solution/license/` | ✅ 책의 License 예제 — **LSP를 지킨 상속의 기준점** |
+| `ch09/solution/shape/` | ✅ 계약을 공유하는 것끼리만 `Shape` 로 묶는다 |
+| `ch09/solution/taxi/` | ✅ 규약 위반을 설정 파일로 격리한다 |
+
+## 기준점 — License
+
+```java
+class Billing {
+    long charge(License license) {
+        return license.calcFee();   // Personal 인지 Business 인지 몰라도 된다
+    }
+}
+```
+
+`PersonalLicense`(월 10,000원)와 `BusinessLicense`(1인당 5,000원)는 계산 방식이 완전히 다릅니다.
+그래도 **"0원 이상의 사용료를 돌려준다"는 같은 약속**을 지키므로 `Billing` 은 분기 없이 둘 다 처리합니다.
+LSP가 요구하는 건 같은 계산이 아니라 **같은 약속**입니다.
+
+## problem 1 — 정사각형은 직사각형이 아니다 (코드에서는)
+
+```java
+Rectangle adSlot = new Square(90);          // 컴파일러는 아무 말도 하지 않는다
+layout.stretchToBannerWidth(adSlot);        // 너비만 728px 로 늘릴 생각이었는데
+adSlot.getHeight();                         // 높이도 728px 가 됐다
+```
+
+`BannerLayout` 은 Rectangle 의 계약대로 너비만 바꿨을 뿐입니다.
+**잘못은 계약을 어긴 하위 타입에 있는데, 사고는 사용하는 쪽에서 납니다.**
+
+이걸 `instanceof` 로 땜질한 게 [`BannerLayoutPatched`](src/main/java/com/example/srp/ch09/problem/shape/BannerLayoutPatched.java) 입니다.
+버그는 막혔지만
+
+- Rectangle 만 알면 되던 코드가 **하위 타입 Square 를 알게 됐고**
+- 계약을 어기는 하위 타입이 또 생기면(테스트의 `LockedRectangle`) **다시 조용히 틀립니다**
+
+LSP 위반이 OCP 위반으로 번지는 순간입니다.
+
+### ★ 꼭 해볼 것
+
+[`SquareSubstitutionGapTest`](src/test/java/com/example/srp/ch09/problem/SquareSubstitutionGapTest.java) 의
+`@Disabled` 를 지우고 실행해 보세요. **Rectangle 의 계약 테스트를 Square 에 돌리면** 3개 모두 깨집니다.
+
+```
+expected: 10L but was: 4L
+```
+
+LSP를 테스트로 옮기면 이렇습니다 — **상위 타입의 테스트는 모든 하위 타입에서도 통과해야 한다.**
+
+## problem 2 — 택시 배차 (아키텍처 수준)
+
+모든 택시 회사는 같은 REST 규약으로 배차를 받기로 했습니다.
+
+```
+{baseUri}/driver/{기사}/pickupAddress/{승차지}/pickupTime/{시각}/destination/{목적지}
+```
+
+**REST 규약이 인터페이스, 각 회사 서버가 구현체**입니다. 그런데 Acme 만 `destination` 을 `dest` 로 구현했고,
+배차 로직에 이런 코드가 생겼습니다.
+
+```java
+if (base.contains("acme.com")) {
+    destinationKey = "dest";
+}
+```
+
+오늘은 동작합니다. 그런데 Acme 가 도메인을 `acmetaxi.co.kr` 로 바꾸면 — **DB 값만 바뀌었을 뿐 코드는 아무도 안 건드렸는데** —
+`if` 가 조용히 빗나가고 배차 요청이 거부됩니다.
+([`TaxiDispatchViolationTest`](src/test/java/com/example/srp/ch09/problem/TaxiDispatchViolationTest.java) 4번)
+
+## solution
+
+### 도형 — 하위 타입 관계를 "행위"로 정한다
+
+```
+ problem                         solution
+ ────────────────                ─────────────────────────
+ Rectangle (가변)                 Shape  ← area() 만 약속
+     △                             △          △
+   Square                     Rectangle    Square     (둘 다 불변 record)
+```
+
+- 정사각형은 "너비만 따로 바꾸기"를 지킬 수 없다 → Rectangle 을 상속하지 않는다
+- 둘이 진짜 공유하는 계약(넓이)만 `Shape` 로 묶는다
+- `stretchToBannerWidth(Rectangle)` 에 Square 를 넘기면 **컴파일 에러** — 런타임 사고가 컴파일 시점으로 당겨진다
+- `totalArea(List<Shape>)` 에는 테스트에서 새로 만든 `RightTriangle` 까지 그대로 치환된다
+- `instanceof`: problem 1곳 → solution **0곳**
+
+### 택시 — 예외를 코드 밖으로 격리한다
+
+[`dispatch-formats.properties`](src/main/resources/ch09/dispatch-formats.properties) 가 책이 말한 "URI를 키로 하는 설정 DB" 역할입니다.
+
+```properties
+acme.com.destination=dest
+```
+
+| 규약 위반이 생기면 | problem | solution |
+|---|---|---|
+| 고치는 곳 | `DispatchUriBuilder` 에 `if` 추가 | 설정 파일에 한 줄 |
+| 재배포 | 필요 | 불필요 |
+| 핵심 로직의 회사 이름 | 1곳 이상 | **0곳** |
+| 도메인이 바뀌면 | 조용히 깨짐 | 설정 키만 바꿈 |
+
+### 솔직하게 짚고 갈 것
+
+**예외가 사라진 게 아니라 격리된 것입니다.** 규약을 어긴 회사가 있다는 사실은 여전히 비용이고,
+누군가는 설정을 관리해야 합니다. 책의 결론도 같습니다 —
+LSP를 조금만 어겨도 시스템 아키텍처가 **별도의 메커니즘을 추가해야 할 만큼 오염**된다는 것.
+그러니 가장 좋은 건 애초에 규약을 지키는 것이고, 못 지켰다면 그 오염이 핵심 로직까지 번지지 않게 막는 것입니다.
+
+## 8장과의 관계
+
+| | 질문 |
+|---|---|
+| **8장 OCP** | 새 구현체를 **끼워 넣어서** 확장할 수 있는가? |
+| **9장 LSP** | 끼워 넣은 구현체가 **기존 약속을 지키는가?** |
+
+LSP는 OCP가 안전하게 동작하기 위한 전제 조건입니다. ch08 solution 의 `PayrollPolicy` 도 License 와 같은 구조예요.
+
+## 테스트 구성
+
+| 테스트 | 보여주는 것 |
+|---|---|
+| [`problem/SquareViolationTest`](src/test/java/com/example/srp/ch09/problem/SquareViolationTest.java) | **★ Square 치환 사고 + instanceof 땜질의 한계** |
+| [`problem/SquareSubstitutionGapTest`](src/test/java/com/example/srp/ch09/problem/SquareSubstitutionGapTest.java) | **`@Disabled` 를 지우면 빨간불** |
+| [`problem/TaxiDispatchViolationTest`](src/test/java/com/example/srp/ch09/problem/TaxiDispatchViolationTest.java) | **★ 핵심 로직의 회사 이름 + 도메인 변경 사고** |
+| [`solution/LicenseSubstitutionTest`](src/test/java/com/example/srp/ch09/solution/LicenseSubstitutionTest.java) | 동적 디스패치, 계약 테스트, main 에 없는 `StudentLicense` 청구 |
+| [`solution/ShapeSubstitutionTest`](src/test/java/com/example/srp/ch09/solution/ShapeSubstitutionTest.java) | **★ Square 는 컴파일 단계에서 차단, instanceof 0곳** |
+| [`solution/TaxiDispatchTest`](src/test/java/com/example/srp/ch09/solution/TaxiDispatchTest.java) | **★ 도메인 변경·새 위반 회사를 설정만으로 해결** |
