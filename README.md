@@ -605,3 +605,167 @@ LSP는 OCP가 안전하게 동작하기 위한 전제 조건입니다. ch08 solu
 | [`solution/LicenseSubstitutionTest`](src/test/java/com/example/srp/ch09/solution/LicenseSubstitutionTest.java) | 동적 디스패치, 계약 테스트, main 에 없는 `StudentLicense` 청구 |
 | [`solution/ShapeSubstitutionTest`](src/test/java/com/example/srp/ch09/solution/ShapeSubstitutionTest.java) | **★ Square 는 컴파일 단계에서 차단, instanceof 0곳** |
 | [`solution/TaxiDispatchTest`](src/test/java/com/example/srp/ch09/solution/TaxiDispatchTest.java) | **★ 도메인 변경·새 위반 회사를 설정만으로 해결** |
+
+---
+
+# 10장 ISP — 인터페이스 분리 원칙 (`ch10`)
+
+> **사용하지 않는 것에 의존하지 마라.**
+
+| 디렉터리 | 내용 |
+|---|---|
+| `ch10/` | 공유 데이터 — `Employee`, `Contact`, `EmployeeRoster`, `TaxTable`, `TaxTableLoader` |
+| `ch10/problem/` | ⚠️ **잘못된 예시** — 세 사용자가 뚱뚱한 인터페이스 하나에 묶여 있다 |
+| `ch10/solution/` | ✅ **해결책** — 사용자별로 인터페이스를 나누고, 구현체는 하나로 둔다 |
+
+## 상황 — 책의 OPS 를 급여 도메인으로
+
+```
+ problem                                    solution
+ ──────────────────────────────────         ─────────────────────────────────────────────────
+ PayrollBatch    ──┐                        PayrollBatch    ──▶ PayrollOperations   ─┐
+ OvertimeMonitor ──┼──▶ EmployeeOperations  OvertimeMonitor ──▶ WorkHoursOperations ─┼──▷ EmployeeService
+ NoticeMailer    ──┘     calculatePay()     NoticeMailer    ──▶ EmployeeDirectory   ─┘
+                         weeklyHours()
+                         contactOf()
+```
+
+| 사용자 | 하는 일 | 쓰는 메서드 |
+|---|---|---|
+| `PayrollBatch` (User1) | 주간 급여 지급 | `calculatePay()` |
+| `OvertimeMonitor` (User2) | 주 52시간 초과 감시 | `weeklyHours()` |
+| `NoticeMailer` (User3) | 사내 공지 메일 | `contactOf()` |
+
+`EmployeeService` 는 생성할 때 **외부 세율표 서버**에서 세율표를 불러옵니다. 세율표가 필요한 건 `calculatePay()` 하나뿐입니다.
+
+## problem — 무슨 일이 벌어지는가
+
+### 1. 셋 다 "의존 3개 / 사용 1개"
+
+[`IspViolationTest`](src/test/java/com/example/srp/ch10/problem/IspViolationTest.java) 가 타입 정보와 소스를 읽어 셉니다.
+
+```
+  PayrollBatch     의존 3개 / 사용 1개   안 쓰는데 묶인 것: [contactOf, weeklyHours]
+  OvertimeMonitor  의존 3개 / 사용 1개   안 쓰는데 묶인 것: [calculatePay, contactOf]
+  NoticeMailer     의존 3개 / 사용 1개   안 쓰는데 묶인 것: [calculatePay, weeklyHours]
+```
+
+### 2. [사고] 세율표 서버가 죽으면 공지 메일도 멈춘다
+
+```
+  NoticeMailer ──▶ EmployeeService ──▶ 세율표 서버 (장애)
+  (System S)       (Framework F)        (Database D)
+```
+
+공지 메일은 세율표를 한 번도 쓰지 않습니다. 그런데 같이 쓰러집니다. 책 후반부의 **S → F → D** 그림 그대로입니다.
+
+### 3. [땜질] 그리고 그 대가
+
+급하게 [`ContactOnlyEmployees`](src/main/java/com/example/srp/ch10/problem/ContactOnlyEmployees.java) 를 만들었습니다.
+`contactOf()` 만 진짜로 구현하고 나머지 둘은 `UnsupportedOperationException` 으로 막았죠. 메일은 다시 나갑니다.
+
+그런데 이 객체는 `EmployeeOperations` 타입이면서 그 약속을 지키지 않습니다.
+`new PayrollBatch(contactOnly)` 는 **컴파일되고, 운영 중에 터집니다.** 9장 LSP 위반입니다.
+**뚱뚱한 인터페이스는 구현하는 쪽을 LSP 위반으로 몰아갑니다.**
+
+### 4. 변경 영향 — 책이 말하는 "불필요한 재컴파일"의 실물
+
+회계팀이 `calculatePay` 에 지급월 파라미터를 추가하면 함께 고쳐야 하는 파일:
+
+```
+  main/problem/ContactOnlyEmployees.java
+  main/problem/EmployeeOperations.java
+  main/problem/EmployeeService.java
+  main/problem/PayrollBatch.java
+  test/problem/NoticeMailerTest.java       ← 급여와 무관
+  test/problem/OvertimeMonitorTest.java    ← 급여와 무관
+```
+
+메일·근무시간 테스트의 가짜 객체가 `EmployeeOperations` 를 구현하고 있어서 컴파일 에러가 납니다.
+
+### ★ 꼭 해볼 것
+
+[`TaxOutageGapTest`](src/test/java/com/example/srp/ch10/problem/TaxOutageGapTest.java) 의 `@Disabled` 를 지우고 실행해 보세요.
+운영팀 요구사항 — "세율표 장애 중에도 공지 메일과 초과근무 감시는 돌아야 한다" — 이 깨집니다.
+
+```
+java.lang.IllegalStateException: 세율표 서버에 연결할 수 없습니다
+```
+
+## solution — 어떻게 막는가
+
+### 쪼갠 건 구현이 아니라 "의존하는 창구"
+
+[`EmployeeService`](src/main/java/com/example/srp/ch10/solution/EmployeeService.java) 의 코드는 problem 과 똑같습니다.
+달라진 건 `implements` 줄뿐입니다.
+
+```java
+public class EmployeeService implements PayrollOperations, WorkHoursOperations, EmployeeDirectory
+```
+
+평소에는 이 객체 하나를 세 사용자에게 모두 넘깁니다. 책의 그림에서 `OPS` 가 세 인터페이스를 구현하는 것과 같습니다.
+
+### 창구가 쪼개지니 선택지가 생긴다
+
+세율표 장애 때:
+
+```java
+// 급여 계산은 정말로 세율표가 필요하다. 이건 멈추는 게 맞다.
+new EmployeeService(roster, TAX_SERVER_DOWN);          // 예외
+
+// 나머지 둘은 세율표와 무관한 구현을 넘긴다
+new NoticeMailer(roster::contactOf);                   // 동작
+new OvertimeMonitor(roster::weeklyHours);              // 동작
+
+new PayrollBatch(roster::contactOf);                   // 컴파일 에러 — 지뢰를 만들 수 없다
+```
+
+### 테스트의 가짜 객체가 람다 한 줄
+
+```java
+// problem: 메서드 셋을 구현하고 그중 둘을 예외로 막은 20줄짜리 클래스
+// solution:
+new NoticeMailer(id -> new Contact("홍길동", "hong@example.com"));
+```
+
+### 비교
+
+| | problem | solution |
+|---|---|---|
+| 사용자별 의존 / 사용 메서드 | 3개 / 1개 | 1개 / 1개 |
+| 세율표 장애 시 공지 메일 | 멈춤 | 동작 |
+| `UnsupportedOperationException` 으로 채운 파일 | 3개 | 0개 |
+| `calculatePay` 변경 시 고칠 파일 | 6개 (메일·근무시간 포함) | 3개 (급여 쪽만) |
+
+## 7장과의 차이
+
+| | 나누는 기준 | 나누는 대상 |
+|---|---|---|
+| **7장 SRP** | 변경을 요구하는 **액터** | 구현 (클래스) |
+| **10장 ISP** | 호출하는 **사용자** | 의존하는 창구 (인터페이스) |
+
+ISP 에서는 구현체가 여전히 하나일 수 있습니다. 중요한 건 **사용하는 쪽이 무엇을 알고 있느냐**입니다.
+
+## 생각해볼 거리
+
+### "메서드 참조가 너무 느슨하지 않나요?"
+
+`WorkHoursOperations` 와 `PayrollOperations` 는 둘 다 `String → long` 입니다.
+그래서 `new PayrollBatch(roster::weeklyHours)` 는 **컴파일됩니다.** 근무시간을 급여로 착각하는 거죠.
+함수형 인터페이스는 모양만 맞으면 받아들입니다. 반환 타입을 `long` 대신 `Money`, `Hours` 같은 값 객체로 두면 이런 실수도 컴파일러가 잡아줍니다.
+인터페이스를 쪼개는 것과 타입을 정확하게 만드는 것은 서로 보완 관계입니다.
+
+### 아키텍처로 가면
+
+책은 10장을 이렇게 맺습니다. **필요 이상으로 많은 걸 포함한 모듈에 의존하면 예상치 못한 문제가 생긴다.**
+이 교훈은 13장의 **CRP(공통 재사용 원칙)** 에서 컴포넌트 수준으로 다시 나옵니다.
+
+## 테스트 구성
+
+| 테스트 | 보여주는 것 |
+|---|---|
+| [`problem/IspViolationTest`](src/test/java/com/example/srp/ch10/problem/IspViolationTest.java) | **★ 의존 3 / 사용 1, 세율표 장애 전파, 땜질의 LSP 위반, 변경 영향** |
+| [`problem/TaxOutageGapTest`](src/test/java/com/example/srp/ch10/problem/TaxOutageGapTest.java) | **`@Disabled` 를 지우면 빨간불** |
+| [`problem/NoticeMailerTest`](src/test/java/com/example/srp/ch10/problem/NoticeMailerTest.java), [`OvertimeMonitorTest`](src/test/java/com/example/srp/ch10/problem/OvertimeMonitorTest.java) | 가짜 객체가 안 쓰는 메서드까지 구현해야 한다 |
+| [`solution/InterfaceSegregationTest`](src/test/java/com/example/srp/ch10/solution/InterfaceSegregationTest.java) | **★ 의존 = 사용, 장애 격리, 가짜 구현 0곳, 변경이 급여 쪽에서 끝남** |
+| [`solution/NoticeMailerTest`](src/test/java/com/example/srp/ch10/solution/NoticeMailerTest.java), [`OvertimeMonitorTest`](src/test/java/com/example/srp/ch10/solution/OvertimeMonitorTest.java), [`PayrollBatchTest`](src/test/java/com/example/srp/ch10/solution/PayrollBatchTest.java) | 가짜 객체가 람다 한 줄 |
