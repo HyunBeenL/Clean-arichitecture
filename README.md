@@ -769,3 +769,200 @@ ISP 에서는 구현체가 여전히 하나일 수 있습니다. 중요한 건 *
 | [`problem/NoticeMailerTest`](src/test/java/com/example/srp/ch10/problem/NoticeMailerTest.java), [`OvertimeMonitorTest`](src/test/java/com/example/srp/ch10/problem/OvertimeMonitorTest.java) | 가짜 객체가 안 쓰는 메서드까지 구현해야 한다 |
 | [`solution/InterfaceSegregationTest`](src/test/java/com/example/srp/ch10/solution/InterfaceSegregationTest.java) | **★ 의존 = 사용, 장애 격리, 가짜 구현 0곳, 변경이 급여 쪽에서 끝남** |
 | [`solution/NoticeMailerTest`](src/test/java/com/example/srp/ch10/solution/NoticeMailerTest.java), [`OvertimeMonitorTest`](src/test/java/com/example/srp/ch10/solution/OvertimeMonitorTest.java), [`PayrollBatchTest`](src/test/java/com/example/srp/ch10/solution/PayrollBatchTest.java) | 가짜 객체가 람다 한 줄 |
+
+---
+
+# 11장 DIP — 의존성 역전 원칙 (`ch11`)
+
+> **소스 코드 의존성은 구체가 아니라 추상을 향해야 한다.**
+
+단, 모든 구체를 피하라는 뜻은 아닙니다. `String` 처럼 거의 안 바뀌는 구체에는 의존해도 됩니다.
+피해야 하는 건 **변동성이 큰 구체** — 우리가 개발 중이고 자주 바뀌는 것 — 입니다.
+공유 데이터 [`Employee`](src/main/java/com/example/srp/ch11/Employee.java) 가 그런 "안정된 구체"입니다.
+
+| 디렉터리 | 내용 |
+|---|---|
+| `ch11/problem/payroll/` | ⚠️ 업무 규칙 `PayDay` — 세부사항을 직접 `import` 하고 `new` 한다 |
+| `ch11/problem/infra/` | 세부사항 — MySQL, SMTP, PDF |
+| `ch11/solution/payroll/` | ✅ 업무 규칙 + **업무 규칙이 소유한 인터페이스** 4개 |
+| `ch11/solution/infra/` | ✅ 세부사항 — payroll 의 인터페이스를 구현한다 |
+| `ch11/solution/main/` | ✅ 조립 지점 `PayrollMain` — 구체 이름을 아는 유일한 곳 |
+
+## 업무 규칙
+
+```
+주 40시간까지는 시급, 초과분은 1.5배로 계산해 사원마다 명세서를 만들어 보낸다.
+```
+
+`PayDay.run()` / `payFor()` 의 코드는 problem 과 solution 이 **똑같습니다.** 달라진 건 의존하는 방향뿐입니다.
+
+## problem — 고수준이 저수준에 의존한다
+
+```java
+public class PayDay {
+    private final MySqlEmployeeRepository repository = new MySqlEmployeeRepository();
+    private final SmtpMailSender mailSender = new SmtpMailSender("smtp.company.com", 587);
+    ...
+    PdfPayslip payslip = new PdfPayslip(employee.name(), pay);
+```
+
+[`DipViolationTest`](src/test/java/com/example/srp/ch11/problem/DipViolationTest.java) 가 소스를 읽어 보여줍니다.
+
+```
+  payroll ──▶ infra : 3개
+      PayDay.java: import ...problem.infra.MySqlEmployeeRepository;
+      PayDay.java: import ...problem.infra.PdfPayslip;
+      PayDay.java: import ...problem.infra.SmtpMailSender;
+  infra ──▶ payroll : 0개
+```
+
+책의 실천법을 거의 다 어겼습니다.
+
+| 실천법 | problem |
+|---|---|
+| 변동성 큰 구체 클래스를 참조하지 마라 | ❌ 필드 타입이 `MySqlEmployeeRepository` |
+| 구체 클래스를 직접 생성하지 마라 (추상 팩토리) | ❌ `new` 3곳 |
+| 변동성 큰 구체의 이름을 언급하지 마라 | ❌ |
+
+### 그래서 벌어지는 일
+
+1. **세부사항이 바뀌면 업무 규칙을 고친다.** "메일 대신 사내 메신저로 보내 주세요" — 급여 규칙은 한 글자도 안 바뀌었는데 `PayDay.java` 를 열어야 합니다.
+2. **업무 규칙을 테스트할 수 없다.** 급여 규칙 하나 확인하려 해도 `run()` 이 운영 DB 연결부터 시도하다 실패합니다.
+
+### ★ 꼭 해볼 것
+
+[`PayRuleGapTest`](src/test/java/com/example/srp/ch11/problem/PayRuleGapTest.java) 의 `@Disabled` 를 지우고 실행해 보세요.
+"주 45시간 × 시급 20,000원 = 950,000원" 을 확인하고 싶었을 뿐인데:
+
+```
+java.lang.IllegalStateException: DB에 연결할 수 없습니다: jdbc:mysql://payroll-db.internal:3306/payroll
+```
+
+급여 규칙이 틀려서가 아니라, **규칙까지 도달하지도 못합니다.**
+
+## solution — 책의 그림 11.1 을 그대로
+
+```
+        payroll (추상 · 업무 규칙)          │        infra (구체 · 세부사항)
+                                            │
+  PayDay ──▶ EmployeeRepository  ◁──────────┼──── MySqlEmployeeRepository
+     │ ──▶ PayslipSender         ◁──────────┼──── SmtpPayslipSender
+     │                                      │
+     └───▶ PayslipFactory        ◁──────────┼──── PdfPayslipFactory ──생성──▶ PdfPayslip
+           (추상 팩토리)                    │
+                                            │
+                         main.PayrollMain ──┴── 구체를 new 해서 PayDay 에 넣어 준다
+```
+
+| 책 그림 11.1 | 이 예제 |
+|---|---|
+| `Application` | `PayDay` |
+| `Service` | `EmployeeRepository`, `PayslipSender`, `Payslip` |
+| `ServiceFactory` / `makeSvc()` | `PayslipFactory` / `makePayslip()` |
+| `ServiceFactoryImpl` | `PdfPayslipFactory` |
+| `ConcreteImpl` | `MySqlEmployeeRepository`, `SmtpPayslipSender`, `PdfPayslip` |
+| `main` | `PayrollMain` |
+
+### 증거 1 — import 방향이 뒤집혔다
+
+```
+  problem  : payroll ──▶ infra 3개   infra ──▶ payroll 0개
+  solution : payroll ──▶ infra 0개   infra ──▶ payroll 6개
+```
+
+### 증거 2 — 제어 흐름과 소스 의존성이 반대 방향 (이게 "역전")
+
+[`DependencyInversionTest`](src/test/java/com/example/srp/ch11/solution/DependencyInversionTest.java) 가
+운영 조립(`PayrollMain`)으로 만든 `PayDay` 의 필드를 리플렉션으로 열어봅니다.
+
+```
+  employees  payroll.EmployeeRepository   ◁── infra.MySqlEmployeeRepository
+  payslips   payroll.PayslipFactory       ◁── infra.PdfPayslipFactory
+  sender     payroll.PayslipSender        ◁── infra.SmtpPayslipSender
+
+  제어 흐름 : 실행 중에는 PayDay 가 infra 의 코드를 호출한다   (payroll → infra)
+  소스 의존 : infra 가 payroll 의 인터페이스를 구현한다       (infra → payroll)
+```
+
+핵심은 **인터페이스가 어느 패키지에 있느냐**입니다. `EmployeeRepository` 는 `infra` 가 아니라 `payroll` 에 있습니다.
+사용하는 쪽(고수준)이 "나는 이런 게 필요하다"고 정하고, 세부사항이 거기에 맞춥니다.
+
+### 증거 3 — ★ 세부사항을 갈아 끼워도 업무 규칙은 그대로
+
+테스트 파일 안에서 `MessengerPayslipSender`(사내 메신저)와 `HtmlPayslipFactory`(HTML 명세서)를 만들어 끼웁니다.
+`payroll` 패키지는 이런 세부사항이 생겼다는 것조차 모릅니다.
+
+```
+    @김개발 이번 주 급여명세서: 급여명세서-김개발.html
+    @박시간 이번 주 급여명세서: 급여명세서-박시간.html
+```
+
+### 증거 4 — 업무 규칙을 DB·메일 서버 없이 테스트
+
+problem 에서 못 썼던 테스트를 [`PayDayTest`](src/test/java/com/example/srp/ch11/solution/PayDayTest.java) 에서는 그냥 씁니다.
+
+```java
+new PayDay(() -> List.of(KIM), textPayslips, recordingSender).run();   // 950,000원
+```
+
+### 증거 5 — DIP 위반은 main 한 곳에 모였다
+
+```
+  infra 의 구체 클래스 이름을 언급하는 파일 (infra 자신 제외)
+  payroll : []
+  main    : [PayrollMain.java]
+```
+
+어딘가에서는 결국 `new MySqlEmployeeRepository()` 를 해야 합니다. **위반을 없앨 수는 없고, 격리할 뿐입니다.**
+스프링이라면 `@Configuration` 클래스나 컴포넌트 스캔이 이 역할을 합니다.
+
+### 비교
+
+| | problem | solution |
+|---|---|---|
+| payroll → infra import | 3개 | **0개** |
+| infra → payroll import | 0개 | 6개 |
+| 업무 규칙 안의 `new 구체()` | 3곳 | **0곳** |
+| 메일 → 메신저 변경 시 여는 파일 | `PayDay.java` (업무 규칙) | `PayrollMain.java` (조립 지점) |
+| 급여 규칙 단위 테스트 | 불가 (DB 필요) | 람다 세 개로 가능 |
+
+## DIP 와 DI 는 다르다
+
+| | DIP (의존성 역전 **원칙**) | DI (의존성 **주입**) |
+|---|---|---|
+| 정체 | 설계 원칙 | 구현 기법 |
+| 질문 | 소스 의존성이 **어느 방향**을 향하나? | 필요한 객체를 **누가 넣어 주나?** |
+
+solution 의 `PayDay` 는 생성자 주입(DI)을 씁니다. 하지만 DI 만으로는 역전이 일어나지 않습니다.
+`EmployeeRepository` 인터페이스를 `infra` 패키지에 두었다면, 생성자 주입을 해도 `payroll ──▶ infra` 방향은 그대로입니다.
+**인터페이스를 고수준 쪽에 두는 것**이 역전입니다.
+
+## 생각해볼 거리
+
+### "problem 의 payFor() 를 public 으로 열면 테스트되지 않나요?"
+
+급여 계산 한 줄은 테스트됩니다. 하지만
+
+- "사원마다 명세서를 만들어 보낸다"는 나머지 업무 규칙(`run()`)은 여전히 테스트할 수 없고
+- `PayDay` 는 여전히 `infra` 를 import 하므로, 알림 수단이 바뀌면 여전히 이 파일을 열어야 합니다.
+
+테스트 가능성은 DIP 의 **결과**이지 목적이 아닙니다. 목적은 **업무 규칙을 세부사항의 변동으로부터 보호하는 것**입니다.
+
+### 책의 나머지 실천법
+
+- **변동성 큰 구체 클래스로부터 파생하지 마라** — 상속은 가장 강하고 경직된 의존입니다.
+- **구체 함수를 오버라이드하지 마라** — 오버라이드해도 원래 함수의 의존성을 그대로 물려받습니다. 추상 함수로 선언하고 구현을 여러 개 두세요.
+
+### 다음 단계
+
+11장의 경계선(`│`)은 이후 장에서 **아키텍처 경계**가 되고, "경계를 넘는 의존성은 항상 고수준을 향한다"는 규칙은
+22장 **의존성 규칙(Dependency Rule)** 으로 발전합니다. 5부 「아키텍처」에서 다시 만납니다.
+
+## 테스트 구성
+
+| 테스트 | 보여주는 것 |
+|---|---|
+| [`problem/DipViolationTest`](src/test/java/com/example/srp/ch11/problem/DipViolationTest.java) | **★ payroll → infra import, new 구체 3곳, DB 없으면 실행 불가, 알림 변경이 업무 규칙을 건드림** |
+| [`problem/PayRuleGapTest`](src/test/java/com/example/srp/ch11/problem/PayRuleGapTest.java) | **`@Disabled` 를 지우면 빨간불** |
+| [`solution/DependencyInversionTest`](src/test/java/com/example/srp/ch11/solution/DependencyInversionTest.java) | **★ import 역전, 제어 흐름 vs 소스 의존, 세부사항 교체, 위반은 main 에만** |
+| [`solution/PayDayTest`](src/test/java/com/example/srp/ch11/solution/PayDayTest.java) | 급여 규칙을 DB·메일 없이 검증 (40시간 이하 / 초과 / 정각 / 발송) |
